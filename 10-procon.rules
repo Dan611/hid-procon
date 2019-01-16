@@ -1,0 +1,4 @@
+#Attach Pro Controller to procon driver
+ACTION=="add", SUBSYSTEM=="hid", DRIVER=="hid-generic", KERNEL=="*:057E:200*.*", \
+PROGRAM="/bin/sh -c 'echo %k > /sys/bus/hid/drivers/hid-generic/unbind; \
+                     echo %k > /sys/bus/hid/drivers/hid-procon/bind'"
