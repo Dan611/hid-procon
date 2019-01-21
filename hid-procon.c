@@ -11,7 +11,7 @@
 #define DEVICE_ID_NINTENDO_JOYCON_R	0x2007
 #define DEVICE_ID_NINTENDO_PROCON	0x2009
 
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("MIT");
 MODULE_AUTHOR("Dan: https://github.com/dan611");
 MODULE_DESCRIPTION("Driver for Nintendo Switch Pro Controller");
 
