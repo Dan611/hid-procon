@@ -15,7 +15,6 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Dan: https://github.com/dan611");
 MODULE_DESCRIPTION("Driver for Nintendo Switch Pro Controller");
 
-
 #define PROCON_REPORT_SEND_USB		0x80
 #define PROCON_REPORT_REPLY_USB		0x81
 #define PROCON_REPORT_REPLY			0x21
@@ -67,6 +66,7 @@ struct procon_data
 	struct work_struct worker_rumble;
 
 	enum modes { PROCON_MODE_SIMPLE, PROCON_MODE_FULL, PROCON_MODE_GYRO } mode, mode_new;
+	int analog_dpad;
 	bool connected;
 	int order;
 	u16 rumble_strong;
@@ -256,6 +256,7 @@ static void procon_work_event(struct work_struct *work)
 		if(!drvdata->connected)
 		{
 			drvdata->connected = true;
+			drvdata->analog_dpad = 0;
 			for(order = 0;order < 8;order++)
 				if(connections[order] == NULL)
 				{
@@ -540,11 +541,15 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 	u64 time;
 	unsigned long flags;
 	
-	bool home_button;
+	bool home_button,
+		 left_button,
+		 right_button;
+	int	analog_dpad;
 	enum modes mode;
 
 	spin_lock_irqsave(&drvdata->lock, flags);
 	mode = drvdata->mode;
+	analog_dpad = drvdata->analog_dpad;
 	drvtime = drvdata->time;
 	spin_unlock_irqrestore(&drvdata->lock, flags);
 
@@ -598,10 +603,29 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 			s16 ry =  *((u16 *) (data + 10))      & 0xFFF0;
 			s16 gy  = -(*((u16 *) (data + 13)) * 7);
 			s16 gx  =   *((u16 *) (data + 15)) * 7;
-			x  -= 0x7FFF;
-			y   = 0x7FFF - y;
-			rx -= 0x7FFF;
-			ry  = 0x7FFF - ry;
+			
+			if(!analog_dpad)
+			{
+				x  -= 0x7FFF;
+				y   = 0x7FFF - y;
+				rx -= 0x7FFF;
+				ry  = 0x7FFF - ry;
+			}
+			else if(analog_dpad == 1)
+			{
+				x = (!!(data[5] & 0x04)*0x7FFF) - (!!(data[5] & 0x08))*0x7FFF;
+				y = (!!(data[5] & 0x01)*0x7FFF) - (!!(data[5] & 0x02))*0x7FFF;
+				rx -= 0x7FFF;
+				ry  = 0x7FFF - ry;
+			}
+			else
+			{
+				x  -= 0x7FFF;
+				y   = 0x7FFF - y;
+				rx = (!!(data[5] & 0x04)*0x7FFF) - (!!(data[5] & 0x08))*0x7FFF;
+				ry = (!!(data[5] & 0x01)*0x7FFF) - (!!(data[5] & 0x02))*0x7FFF;
+			}
+			
 			input_report_abs(input, ABS_X, x);
 			input_report_abs(input, ABS_Y, y);
 			input_report_abs(input, ABS_RX, rx);
@@ -623,12 +647,24 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 			input_report_key(input, BTN_EXTRA,		(data[4] & 0x20));
 			input_report_key(input, BTN_THUMBL,		(data[4] & 0x08));
 			input_report_key(input, BTN_THUMBR,		(data[4] & 0x04));
-			input_report_key(input, BTN_DPAD_UP,	(data[5] & 0x02));
-			input_report_key(input, BTN_DPAD_DOWN,	(data[5] & 0x01));
-			input_report_key(input, BTN_DPAD_LEFT,	(data[5] & 0x08));
-			input_report_key(input, BTN_DPAD_RIGHT,	(data[5] & 0x04));
+			if(!analog_dpad)
+			{
+				input_report_key(input, BTN_DPAD_UP,	(data[5] & 0x02));
+				input_report_key(input, BTN_DPAD_DOWN,	(data[5] & 0x01));
+				input_report_key(input, BTN_DPAD_LEFT,	(data[5] & 0x08));
+				input_report_key(input, BTN_DPAD_RIGHT,	(data[5] & 0x04));
+			}
+			else
+			{
+				input_report_key(input, BTN_DPAD_UP,	false);
+				input_report_key(input, BTN_DPAD_DOWN,	false);
+				input_report_key(input, BTN_DPAD_LEFT,	false);
+				input_report_key(input, BTN_DPAD_RIGHT,	false);
+			}
 
 			home_button = !!(data[4] & 0x10);
+			left_button = !!(data[4] & 0x08);
+			right_button = !!(data[4] & 0x04);
 		}
 		else
 		{
@@ -636,10 +672,28 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 			s16 y  = *((s16 *) (data + 6));
 			s16 rx = *((s16 *) (data + 8));
 			s16 ry = *((s16 *) (data + 10));
-			x  -= 0x7FFF;
-			y  -= 0x7FFF;
-			rx -= 0x7FFF;
-			ry -= 0x7FFF;
+			if(!analog_dpad)
+			{
+				x  -= 0x7FFF;
+				y  -= 0x7FFF;
+				rx -= 0x7FFF;
+				ry -= 0x7FFF;
+			}
+			else if(analog_dpad == 1)
+			{
+				x = hatmap[data[3]].right*0x7FFF - hatmap[data[3]].left*0x7FFF;
+				y = hatmap[data[3]].down*0x7FFF - hatmap[data[3]].up*0x7FFF;
+				rx -= 0x7FFF;
+				ry -= 0x7FFF;
+			}
+			else
+			{
+				x  -= 0x7FFF;
+				y  -= 0x7FFF;
+				rx = hatmap[data[3]].right*0x7FFF - hatmap[data[3]].left*0x7FFF;
+				ry = hatmap[data[3]].down*0x7FFF - hatmap[data[3]].up*0x7FFF;
+			}
+			
 			input_report_abs(input, ABS_X, x);
 			input_report_abs(input, ABS_Y, y);
 			input_report_abs(input, ABS_RX, rx);
@@ -661,13 +715,24 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 			input_report_key(input, BTN_EXTRA,		(data[2] & 0x20));
 			input_report_key(input, BTN_THUMBL,		(data[2] & 0x04));
 			input_report_key(input, BTN_THUMBR,		(data[2] & 0x08));
-			input_report_key(input, BTN_DPAD_UP,	hatmap[data[3]].up);
-			input_report_key(input, BTN_DPAD_DOWN,	hatmap[data[3]].down);
-			input_report_key(input, BTN_DPAD_LEFT,	hatmap[data[3]].left);
-			input_report_key(input, BTN_DPAD_RIGHT,	hatmap[data[3]].right);
-			input_report_key(input, BTN_DPAD_RIGHT,	hatmap[data[3]].right);
+			if(!analog_dpad)
+			{
+				input_report_key(input, BTN_DPAD_UP,	hatmap[data[3]].up);
+				input_report_key(input, BTN_DPAD_DOWN,	hatmap[data[3]].down);
+				input_report_key(input, BTN_DPAD_LEFT,	hatmap[data[3]].left);
+				input_report_key(input, BTN_DPAD_RIGHT,	hatmap[data[3]].right);
+			}
+			else
+			{
+				input_report_key(input, BTN_DPAD_UP,	false);
+				input_report_key(input, BTN_DPAD_DOWN,	false);
+				input_report_key(input, BTN_DPAD_LEFT,	false);
+				input_report_key(input, BTN_DPAD_RIGHT,	false);
+			}
 
 			home_button = !!(data[2] & 0x10);
+			left_button = !!(data[2] & 0x04);
+			right_button = !!(data[2] & 0x08);
 		}
 		input_sync(input);
 
@@ -676,12 +741,35 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 			time = ktime_get_ns();
 			if(drvtime > 1 && (time - drvtime > 2000000000))
 			{
-				spin_lock_irqsave(&drvdata->lock, flags);
-				drvdata->event_cmd = PROCON_EVENT_TOGGLE_GYRO;
-				drvdata->time = 1; // lock timer until key released
-				spin_unlock_irqrestore(&drvdata->lock, flags);
+				if(!(left_button || right_button))
+				{
+					spin_lock_irqsave(&drvdata->lock, flags);
+					drvdata->event_cmd = PROCON_EVENT_TOGGLE_GYRO;
+					drvdata->time = 1; // lock timer until key released
+					spin_unlock_irqrestore(&drvdata->lock, flags);
 
-				schedule_work(&drvdata->worker_event);
+					schedule_work(&drvdata->worker_event);
+				}
+				else if(left_button && !right_button)
+				{
+					spin_lock_irqsave(&drvdata->lock, flags);
+					drvdata->event_cmd = PROCON_CMD_LED;
+					drvdata->analog_dpad = analog_dpad == 1 ? 0 : 1;
+					drvdata->time = 1;
+					spin_unlock_irqrestore(&drvdata->lock, flags);
+					
+					schedule_work(&drvdata->worker_event);
+				}
+				else if(!left_button && right_button)
+				{
+					spin_lock_irqsave(&drvdata->lock, flags);
+					drvdata->event_cmd = PROCON_CMD_LED;
+					drvdata->analog_dpad = analog_dpad == 2 ? 0 : 2;
+					drvdata->time = 1;
+					spin_unlock_irqrestore(&drvdata->lock, flags);
+					
+					schedule_work(&drvdata->worker_event);
+				}
 			}
 		}
 		else
