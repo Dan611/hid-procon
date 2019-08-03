@@ -3,6 +3,7 @@
 
 * This driver fully enables normal controller usage both over bluetooth and USB.
 * The gyroscope can be enabled and disabled by holding the HOME button for 2 seconds, and will function as a third joystick.
+* The gyroscope can "aim-assist" the left or right analog sticks by holding down the L or R trigger while holding the HOME button to enable the gyroscope. Once enabled, hold the L or R trigger to have the gyroscope be applied to the left or right analog stick's input.
 * The joysticks can be controlled by the d-pad by holding the HOME button and pressing in one of the joysticks for 2 seconds, for old 2D games that want to be controlled by a joystick.
 * Simple force feedback is supported.
 * The LED order indicator works for up to 8 unique controllers.
