@@ -66,7 +66,8 @@ struct procon_data
 	struct work_struct worker_rumble;
 
 	enum modes { PROCON_MODE_SIMPLE, PROCON_MODE_FULL, PROCON_MODE_GYRO } mode, mode_new;
-	int analog_dpad;
+	int analog_dpad,
+		gyro_trigger;
 	bool connected;
 	int order;
 	u16 rumble_strong;
@@ -256,7 +257,8 @@ static void procon_work_event(struct work_struct *work)
 		if(!drvdata->connected)
 		{
 			drvdata->connected = true;
-			drvdata->analog_dpad = 0;
+			//~ drvdata->analog_dpad = 0;
+			//~ drvdata->gyro_trigger = 0;
 			for(order = 0;order < 8;order++)
 				if(connections[order] == NULL)
 				{
@@ -351,14 +353,21 @@ static void procon_work_rumble(struct work_struct *work)
 {
 	struct procon_data *drvdata = container_of(work, struct procon_data, worker_rumble);
 	struct hid_device *hdev = drvdata->hdev;
+	unsigned long flags;
+
 	u8 data[12] = {PROCON_CMD_RUMBLE_ONLY, 0x00};
 
 	u8 h_freq = 0x20;
 	u8 l_freq = 0x28;
+	u8 h_amp;
+	u8 l_amp1;
+	u8 l_amp2;
 
-	u8 h_amp = (drvdata->rumble_weak / 649) * 2;
-	u8 l_amp1 = (drvdata->rumble_strong / 649);
-	u8 l_amp2 = ((l_amp1 % 2) * 128);
+	spin_lock_irqsave(&drvdata->lock, flags);
+	h_amp = (drvdata->rumble_weak / 649) * 2;
+	l_amp1 = (drvdata->rumble_strong / 649);
+	spin_unlock_irqrestore(&drvdata->lock, flags);
+	l_amp2 = ((l_amp1 % 2) * 128);
 	l_amp1 = (l_amp1 / 2) + 64;
 
 	data[2] = data[6] = h_freq;
@@ -375,7 +384,7 @@ static void procon_work_rumble(struct work_struct *work)
 static int procon_play(struct input_dev *input, void *data, struct ff_effect *effect)
 {
 	struct procon_data *drvdata = input_get_drvdata(input);
-	
+
 	if(effect->type == FF_RUMBLE)
 	{
 		drvdata->rumble_weak = effect->u.rumble.weak_magnitude;
@@ -423,12 +432,12 @@ static int procon_input_register(struct procon_data *drvdata)
 	input_set_capability(input, EV_KEY, BTN_DPAD_LEFT);
 	input_set_capability(input, EV_KEY, BTN_DPAD_RIGHT);
 	input_set_capability(input, EV_FF, FF_RUMBLE);
-	input_set_abs_params(input, ABS_X, -0x7FFF, 0x7FFF, 0, 0xFFF);
-	input_set_abs_params(input, ABS_Y, -0x7FFF, 0x7FFF, 0, 0xFFF);
-	input_set_abs_params(input, ABS_RX, -0x7FFF, 0x7FFF, 0, 0xFFF);
-	input_set_abs_params(input, ABS_RY, -0x7FFF, 0x7FFF, 0, 0xFFF);
-	input_set_abs_params(input, ABS_TILT_X, -0x7FFF, 0x7FFF, 0xFF, 0);
-	input_set_abs_params(input, ABS_TILT_Y, -0x7FFF, 0x7FFF, 0xFF, 0);
+	input_set_abs_params(input, ABS_X, -0x7FFF, 0x7FFF, 0, 0x7FF);
+	input_set_abs_params(input, ABS_Y, -0x7FFF, 0x7FFF, 0, 0x7FF);
+	input_set_abs_params(input, ABS_RX, -0x7FFF, 0x7FFF, 0, 0x7FF);
+	input_set_abs_params(input, ABS_RY, -0x7FFF, 0x7FFF, 0, 0x7FF);
+	input_set_abs_params(input, ABS_TILT_X, -0x7FFF, 0x7FFF, 0x0F, 0);
+	input_set_abs_params(input, ABS_TILT_Y, -0x7FFF, 0x7FFF, 0x0F, 0);
 	
 	retval = input_register_device(input);
 	if(retval)
@@ -543,13 +552,17 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 	
 	bool home_button,
 		 left_button,
-		 right_button;
-	int	analog_dpad;
+		 right_button,
+		 triggerl_button,
+		 triggerr_button;
+	int	analog_dpad,
+		gyro_trigger;
 	enum modes mode;
 
 	spin_lock_irqsave(&drvdata->lock, flags);
 	mode = drvdata->mode;
 	analog_dpad = drvdata->analog_dpad;
+	gyro_trigger = drvdata->gyro_trigger;
 	drvtime = drvdata->time;
 	spin_unlock_irqrestore(&drvdata->lock, flags);
 
@@ -564,7 +577,7 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 	}
 	if(unlikely(!drvdata || !input || size < 1))
 		return -EINVAL;
-
+	
 	if(data[PROCON_REPORT_TYPE] == PROCON_REPORT_REPLY_USB)
 	{
 		data += 10;
@@ -573,7 +586,7 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 
 	if(data[PROCON_REPORT_TYPE] == PROCON_REPORT_REPLY)
 	{
-	
+		hid_info(hdev, "REPORT_CMD_ACK %04X", data[PROCON_REPORT_CMD_ACK]);
 		//~ hid_info(hdev, "REPLY TO CMD %02hhX\n", data[PROCON_REPORT_CMD_ACK]);
 		
 		// after sending commands, the controller will return an acknowledgement
@@ -601,15 +614,50 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 			s16 y  =  *((u16 *) (data + 7))       & 0xFFF0;
 			s16 rx = (*((u16 *) (data + 9)) << 4) & 0xFFF0;
 			s16 ry =  *((u16 *) (data + 10))      & 0xFFF0;
-			s16 gy  = -(*((u16 *) (data + 13)) * 7);
+			s16 gy  = (*((u16 *) (data + 13)) * 7);
 			s16 gx  =   *((u16 *) (data + 15)) * 7;
-			
+
 			if(!analog_dpad)
 			{
 				x  -= 0x7FFF;
 				y   = 0x7FFF - y;
 				rx -= 0x7FFF;
 				ry  = 0x7FFF - ry;
+				
+				if(gyro_trigger == 1 && !!(data[5] & 0x40))
+				{
+					if(x < 0 && gx < 0 && (s16) (x + gx) > 0)
+						x = -0x7FFF;
+					else if(x > 0 && gx > 0 && (s16) (x + gx) < 0)
+						x = 0x7FFF;
+					else
+						x += gx;
+					if(y < 0 && gy < 0 && (s16) (y + gy) > 0)
+						y = -0x7FFF;
+					else if(y > 0 && gy > 0 && (s16) (y + gy) < 0)
+						y = 0x7FFF;
+					else
+						y += gy;
+					gx = 0;
+					gy = 0;
+				}
+				else if(gyro_trigger == 2 && !!(data[3] & 0x40))
+				{
+					if(rx < 0 && gx < 0 && (s16) (rx + gx) > 0)
+						rx = -0x7FFF;
+					else if(rx > 0 && gx > 0 && (s16) (rx + gx) < 0)
+						rx = 0x7FFF;
+					else
+						rx += gx;
+					if(ry < 0 && gy < 0 && (s16) (ry + gy) > 0)
+						ry = -0x7FFF;
+					else if(ry > 0 && gy > 0 && (s16) (ry + gy) < 0)
+						ry = 0x7FFF;
+					else
+						ry += gy;
+					gx = 0;
+					gy = 0;
+				}
 			}
 			else if(analog_dpad == 1)
 			{
@@ -665,6 +713,8 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 			home_button = !!(data[4] & 0x10);
 			left_button = !!(data[4] & 0x08);
 			right_button = !!(data[4] & 0x04);
+			triggerl_button = !!(data[5] & 0x40);
+			triggerr_button = !!(data[3] & 0x40);
 		}
 		else
 		{
@@ -733,6 +783,8 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 			home_button = !!(data[2] & 0x10);
 			left_button = !!(data[2] & 0x04);
 			right_button = !!(data[2] & 0x08);
+			triggerl_button = !!(data[1] & 0x10);
+			triggerr_button = !!(data[1] & 0x20);
 		}
 		input_sync(input);
 
@@ -745,6 +797,7 @@ static int procon_raw_event(struct hid_device *hdev, struct hid_report *report, 
 				{
 					spin_lock_irqsave(&drvdata->lock, flags);
 					drvdata->event_cmd = PROCON_EVENT_TOGGLE_GYRO;
+					drvdata->gyro_trigger = triggerl_button ? 1 : triggerr_button ? 2 : 0;
 					drvdata->time = 1; // lock timer until key released
 					spin_unlock_irqrestore(&drvdata->lock, flags);
 
